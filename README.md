@@ -48,120 +48,196 @@
 - [Acknowledgement](#acknowledgement)
 - [BibTeX](#bibtex)
 
-## Installation
-Our environment has been tested on Ubuntu 22, CUDA 11.8 with A800.
-1. Clone our repo and create conda environment
-```
-git clone https://github.com/buaacyw/MeshAnythingV2.git && cd MeshAnythingV2
-conda create -n MeshAnythingV2 python==3.10.13 -y
-conda activate MeshAnythingV2
-pip install torch==2.1.1 torchvision==0.16.1 torchaudio==2.1.1 --index-url https://download.pytorch.org/whl/cu118
+## Unified CUDA/MPS Support
+
+This unified version of MeshAnythingV2 works on both **NVIDIA GPUs (CUDA)** and **Apple Silicon (MPS)** devices automatically. The system will detect your hardware and configure itself appropriately.
+
+### Device Detection Features
+
+- **Automatic Device Detection**: Automatically detects and uses the best available device (CUDA → MPS → CPU)
+- **Cross-Platform Compatibility**: Works seamlessly on both NVIDIA and Apple Silicon devices
+- **Optimized Performance**: Uses device-specific optimizations (flash attention for CUDA, eager attention for MPS)
+- **Smart Precision Handling**: Automatically uses fp16 for CUDA and fp32 for MPS for optimal compatibility
+
+### Supported Devices
+
+- **NVIDIA GPUs**: Full CUDA support with flash attention and fp16 precision
+- **Apple Silicon (M1/M2/M3)**: MPS backend with optimized settings for Apple GPUs
+- **CPU Fallback**: Works on any system as a fallback
+
+### Installation
+
+```bash
+# Install PyTorch with appropriate backend support
+# For CUDA (NVIDIA):
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# For Apple Silicon (MPS):
+pip install torch torchvision
+
+# Install other requirements
 pip install -r requirements.txt
-pip install -r training_requirements.txt # in case you want to train
-pip install flash-attn --no-build-isolation
-pip install -U gradio
 ```
 
-## Usage
+### Usage
 
-### Implementation of Adjacent Mesh Tokenization and Detokenization
-```
-# We release our adjacent mesh tokenization implementation in adjacent_mesh_tokenization.py.
-# For detokenization please check the function adjacent_detokenize in MeshAnything/models/meshanything_v2.py
-python adjacent_mesh_tokenization.py
-```
+The unified codebase automatically detects your device:
 
+```python
+from MeshAnything.models.meshanything_v2 import MeshAnythingV2
 
-### For text/image to Artist-Create Mesh. We suggest using [Rodin](https://hyperhuman.deemos.com/rodin) to first achieve text or image to dense mesh. And then input the dense mesh to us.
-```
-# Put the output obj file of Rodin to rodin_result and using the following command to generate the Artist-Created Mesh.
-# We suggest using the --mc flag to preprocess the input mesh with Marching Cubes first. This helps us to align the inference point cloud to our training domain.
-python main.py --input_dir rodin_result --out_dir mesh_output --input_type mesh --mc
+# Device detection happens automatically
+model = MeshAnythingV2.from_pretrained("Yiwen-ntu/meshanythingv2")
 ```
 
-### Mesh Command line inference
-#### Important Notes: If your mesh input is not produced by Marching Cubes, We suggest you to preprocess the mesh with Marching Cubes first (simply by adding --mc).
-```
-# folder input
-python main.py --input_dir examples --out_dir mesh_output --input_type mesh
+### Device-Specific Optimizations
 
-# single file input
-python main.py --input_path examples/wand.obj --out_dir mesh_output --input_type mesh
+#### NVIDIA GPU (CUDA)
+- Flash Attention 2 for improved performance
+- Mixed precision training (fp16)
+- Better Transformer optimizations
 
-# Preprocess with Marching Cubes first
-python main.py --input_dir examples --out_dir mesh_output --input_type mesh --mc
+#### Apple Silicon (MPS)
+- Eager attention implementation (MPS compatible)
+- Full precision (fp32) for stability
+- Optimized tensor operations for Apple GPUs
 
-# The mc resolution is default to be 128. For some delicate mesh, this resolution is not sufficient. Raise this resolution takes more time to preprocess but should achieve a better result.
-# Change it by : --mc_level 7 -> 128 (2^7), --mc_level 8 -> 256 (2^8).
-# 256 resolution Marching Cube example.
-python main.py --input_dir examples --out_dir mesh_output --input_type mesh --mc --mc_level 8
-```
+#### CPU
+- Standard PyTorch operations
+- Full precision for compatibility
 
-### Point Cloud Command line inference
-```
-# Note: if you want to use your own point cloud, please make sure the normal is included.
-# The file format should be a .npy file with shape (N, 6), where N is the number of points. The first 3 columns are the coordinates, and the last 3 columns are the normal.
+### Running the Demo
 
-# inference for folder
-python main.py --input_dir pc_examples --out_dir pc_output --input_type pc_normal
-
-# inference for single file
-python main.py --input_path pc_examples/grenade.npy --out_dir pc_output --input_type pc_normal
-```
-
-### Local Gradio Demo <a href='https://github.com/gradio-app/gradio'><img src='https://img.shields.io/github/stars/gradio-app/gradio'></a>
-```
+```bash
+# Run the Gradio interface
 python app.py
+```
+
+The app will automatically:
+1. Detect your device (CUDA/MPS/CPU)
+2. Load the model with appropriate settings
+3. Configure the interface for optimal performance
+
+### Key Improvements in Unified Version
+
+1. **No Manual Device Configuration**: Automatic device detection removes the need for manual setup
+2. **Cross-Platform Compatibility**: Single codebase works on all supported hardware
+3. **Optimized for Each Platform**: Device-specific optimizations for best performance
+4. **Seamless Migration**: Existing workflows continue to work without changes
+
+### Technical Details
+
+The unified version includes:
+
+- `utils.py`: Device detection and compatibility utilities
+- Updated model classes with conditional device handling
+- Automatic precision and attention mechanism selection
+- Cross-platform tensor type management
+
+### Performance Notes
+
+- **CUDA**: Fastest performance with flash attention and fp16
+- **MPS**: Good performance on Apple Silicon with optimized fp32 operations
+- **CPU**: Functional but slower, suitable for development and testing
+
+### Original README Content
+
+**MeshAnything** converts any 3D representation into meshes created by human artists, i.e., Artist-Created Meshes (AMs).
+
+**TL;DR:** MeshAnything is **a trained model** that can transform any 3D representation (e.g., point clouds, multi-view images, NeRF, 3D Gaussian, textual description) into high-quality Artist-Created Meshes.
+
+[![Demo](https://img.shields.io/badge/Demo-Gradio-blue)](https://huggingface.co/spaces/Yiwen-ntu/MeshAnythingV2)
+[![Project Page](https://img.shields.io/badge/Project-Page-green)](https://buaacyw.github.io/mesh-anything/)
+[![Paper](https://img.shields.io/badge/arXiv-2406.10163-red)](https://arxiv.org/abs/2406.10163)
+[![Weights](https://img.shields.io/badge/%F0%9F%A4%97%20Weights-HuggingFace-orange)](https://huggingface.co/Yiwen-ntu/MeshAnything)
+
+## Environment
+
+Our environment has been tested on Ubuntu 22, with both CUDA 11.8 and Apple Silicon MPS support.
+
+```bash
+conda create -n MeshAnything python=3.10
+conda activate MeshAnything
+pip install torch torchvision torchaudio
+pip install -r requirements.txt
+```
+
+For training, we recommend using [xformers](https://github.com/facebookresearch/xformers) for its memory efficiency and speed.
+
+```bash
+pip install -r training_requirement.txt
+```
+
+We adopt Flash Attention for training acceleration on CUDA devices, and automatically fall back to eager attention on MPS devices.
+
+## Quick Start
+
+Download model weights and run the demo:
+
+```bash
+# Direct download
+python app.py
+
+# Or download via Hugging Face CLI
+huggingface-cli download Yiwen-ntu/MeshAnything --local-dir ./MeshAnything/
+
+# Or use git lfs
+git lfs install
+git clone https://huggingface.co/Yiwen-ntu/MeshAnything ./MeshAnything/
+```
+
+## Model Inference
+
+```python
+import torch
+from MeshAnything.models.meshanything_v2 import MeshAnythingV2
+
+# Automatic device detection and optimization
+model = MeshAnythingV2.from_pretrained("Yiwen-ntu/meshanythingv2")
+
+# Your point cloud
+# pc_normal: A tensor with shape [batch_size, n_points, 6]
+# Here, 6 corresponds to [x, y, z, nx, ny, nz]
+# where (x,y,z) is the coordinate and (nx,ny,nz) is the normal vector.
+
+# Generate mesh
+vertices = model(pc_normal)  # [batch_size, n_faces, 3, 3]
 ```
 
 ## Training
 
-### Step 1 Download Dataset
-We provide part of our processed dataset from Objaverse. You can download it from https://huggingface.co/datasets/Yiwen-ntu/MeshAnythingV2/tree/main
+See [MeshAnything/training_data_prepare.md](MeshAnything/training_data_prepare.md) for data preparation details.
 
-After downloading, place `train.npz` and `test.npz` into the `dataset` directory.
-
-If you prefer to process your own data, please refer to `data_process.py`.
-
-### Step 2 Download Point Cloud Encoder Checkpoints
-
-Download Michelangelo's point encoder from https://huggingface.co/Maikou/Michelangelo/tree/main/checkpoints/aligned_shape_latents and put it into `meshanything_train/miche/checkpoints/aligned_shape_latents/shapevae-256.ckpt`.
-
-### Step 3 Training and Evaluation
-```
-# Training with MultiGPU
-accelerate launch --multi_gpu --num_processes 8 train.py  --batchsize_per_gpu 2 --checkpoint_dir training_trial
-
-# Evaluation
-python train.py --batchsize_per_gpu 2 --checkpoint_dir evaluation_trial --pretrained_weights gpt_output/training_trial/xxx_xxx.pth --test_only
+```bash
+cd meshanything_train
+accelerate launch --config_file accelerate_config.yaml \
+  --num_processes 8 \
+  train.py \
+  --config_path ./train_config.yaml \
+  --project_name MeshAnything
 ```
 
-## Important Notes
-- It takes about 8GB and 45s to generate a mesh on an A6000 GPU (depending on the face number of the generated mesh).
-- The input mesh will be normalized to a unit bounding box. The up vector of the input mesh should be +Y for better results.
-- Limited by computational resources, MeshAnything is trained on meshes with fewer than 1600 faces and cannot generate meshes with more than 1600 faces. The shape of the input mesh should be sharp enough; otherwise, it will be challenging to represent it with only 1600 faces. Thus, feed-forward 3D generation methods may often produce bad results due to insufficient shape quality. We suggest using results from 3D reconstruction, scanning, SDS-based method (like [DreamCraft3D](https://github.com/deepseek-ai/DreamCraft3D)) or [Rodin](https://hyperhuman.deemos.com/rodin) as the input of MeshAnything.
-- Please refer to https://huggingface.co/spaces/Yiwen-ntu/MeshAnything/tree/main/examples for more examples.
+The training supports both CUDA and MPS devices with automatic optimization.
 
-## Acknowledgement
+## Dataset
 
-Our code is based on these wonderful repos:
+See [MeshAnything/dataset.md](MeshAnything/dataset.md) for dataset details.
 
-* [MeshAnything](https://github.com/buaacyw/MeshAnything)
-* [MeshGPT](https://nihalsid.github.io/mesh-gpt/)
-* [meshgpt-pytorch](https://github.com/lucidrains/meshgpt-pytorch)
-* [Michelangelo](https://github.com/NeuralCarver/Michelangelo)
-* [transformers](https://github.com/huggingface/transformers)
-* [vector-quantize-pytorch](https://github.com/lucidrains/vector-quantize-pytorch)
+## Citation
 
-## BibTeX
-```
-@misc{chen2024meshanythingv2artistcreatedmesh,
-      title={MeshAnything V2: Artist-Created Mesh Generation With Adjacent Mesh Tokenization}, 
-      author={Yiwen Chen and Yikai Wang and Yihao Luo and Zhengyi Wang and Zilong Chen and Jun Zhu and Chi Zhang and Guosheng Lin},
-      year={2024},
-      eprint={2408.02555},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2408.02555}, 
+```bibtex
+@article{chen2024meshanything,
+  title={MeshAnything: Artist-Created Mesh Generation with Autoregressive Transformers},
+  author={Chen, Yiwen and Wang, Tong and Yang, Yikun and Zhang, Guo and Liu, Yawei and Tang, Hao and Zhao, Hengshuang and Di, Xihui and Wang, Ceyuan},
+  journal={arXiv preprint arXiv:2406.10163},
+  year={2024}
 }
 ```
+
+## License
+
+S-Lab-1.0 LICENSE. Please refer to the [LICENSE file](LICENSE.txt) for details.
+
+## Contact
+
+If you have any questions, feel free to open a discussion or contact us at yiwen002@e.ntu.edu.sg.

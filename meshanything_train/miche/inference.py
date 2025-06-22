@@ -28,7 +28,15 @@ def load_model(args):
         model_config = model_config.model
 
     model = instantiate_from_config(model_config, ckpt_path=args.ckpt_path)
-    model = model.cuda()
+    # Use dynamic device detection
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
+    
+    model = model.to(device)
     model = model.eval()
 
     return model
@@ -44,7 +52,8 @@ def load_surface(fp):
     surface = torch.FloatTensor(surface[ind])
     normal = torch.FloatTensor(normal[ind])
     
-    surface = torch.cat([surface, normal], dim=-1).unsqueeze(0).cuda()
+    # Use the same device as the model
+    surface = torch.cat([surface, normal], dim=-1).unsqueeze(0).to(device)
     
     return surface
 

@@ -3,7 +3,13 @@ import argparse
 from omegaconf import OmegaConf
 import numpy as np
 import torch
+import sys
+import os
 from .michelangelo.utils.misc import instantiate_from_config
+
+# Add parent directory to path to import utils
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+from utils import get_device, is_mps_device
 
 def load_surface(fp):
     
@@ -16,7 +22,9 @@ def load_surface(fp):
     surface = torch.FloatTensor(surface[ind])
     normal = torch.FloatTensor(normal[ind])
     
-    surface = torch.cat([surface, normal], dim=-1).unsqueeze(0).cuda()
+    # Use dynamic device detection instead of hardcoded cuda()
+    device = get_device()
+    surface = torch.cat([surface, normal], dim=-1).unsqueeze(0).to(device)
     
     return surface
 
@@ -46,11 +54,21 @@ def load_model(ckpt_path="MeshAnything/miche/shapevae-256.ckpt"):
         model_config = model_config.model
 
     model = instantiate_from_config(model_config, ckpt_path=ckpt_path)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Use dynamic device detection with MPS support
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+        
+    print(f"Loading model to device: {device}")
     model.to(device)
     model = model.eval()
 
     return model
+
 if __name__ == "__main__":
     '''
     1. Reconstruct point cloud

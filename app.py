@@ -5,20 +5,29 @@ from accelerate.utils import set_seed
 from accelerate import Accelerator
 import numpy as np
 import gradio as gr
-from mesh_to_pc import process_mesh_to_pc
+from data_process import process_mesh_to_pc
 import time
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from PIL import Image
 import io
 from MeshAnything.models.meshanything_v2 import MeshAnythingV2
+from utils import get_device, is_mps_device
 
 model = MeshAnythingV2.from_pretrained("Yiwen-ntu/meshanythingv2")
 
-device = torch.device('cuda')
-accelerator = Accelerator(
-    mixed_precision="fp16",
-)
+# Use device detection instead of hardcoded CUDA
+device = get_device()
+print(f"Using device: {device}")
+
+# Configure accelerator based on device
+if is_mps_device(device):
+    # MPS doesn't support fp16 mixed precision well, use fp32
+    accelerator = Accelerator(mixed_precision="no")
+else:
+    # Use fp16 for CUDA devices
+    accelerator = Accelerator(mixed_precision="fp16")
+
 model = accelerator.prepare(model)
 model.eval()
 print("Model loaded to device")
@@ -134,9 +143,18 @@ def do_inference(input_3d, sample_seed=0, do_sampling=False, do_marching_cubes=F
     pc_coor = pc_coor / np.abs(pc_coor).max() * 0.99 # input should be from -1 to 1
 
     assert (np.linalg.norm(normals, axis=-1) > 0.99).all(), "normals should be unit vectors, something wrong"
-    normalized_pc_normal = np.concatenate([pc_coor, normals], axis=-1, dtype=np.float16)
+    
+    # Use appropriate dtype based on device
+    if is_mps_device(device):
+        # Use float32 for MPS compatibility
+        input_dtype = torch.float32
+    else:
+        # Use float16 for CUDA efficiency
+        input_dtype = torch.float16
+        
+    normalized_pc_normal = np.concatenate([pc_coor, normals], axis=-1, dtype=np.float32)
 
-    input = torch.tensor(normalized_pc_normal, dtype=torch.float16, device=device)[None]
+    input = torch.tensor(normalized_pc_normal, dtype=input_dtype, device=device)[None]
     print("Data loaded")
 
     # with accelerator.autocast():
