@@ -39,6 +39,8 @@ class ShapeOPT(OPTForCausalLM):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,  # Accept any additional keyword arguments for compatibility
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -132,6 +134,7 @@ class ShapeOPT(OPTForCausalLM):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            cache_position=cache_position,
         )
 
         logits = self.lm_head(outputs[0]).contiguous()
@@ -218,6 +221,8 @@ class ShapeOPTDecoder(OPTDecoder):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,  # Accept any additional keyword arguments for compatibility
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         r"""
         Args:
@@ -302,7 +307,28 @@ class ShapeOPTDecoder(OPTDecoder):
             raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
         batch_size, seq_length = inputs_embeds.shape[:2] # seq_length not used since mask_seq_length is not used
-        past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        
+        # Handle different cache formats for compatibility with different transformers versions
+        past_key_values_length = 0
+        if past_key_values is not None:
+            try:
+                # Try old cache format (tuple of tuples)
+                if hasattr(past_key_values, '__len__') and len(past_key_values) > 0:
+                    if hasattr(past_key_values[0], '__len__') and len(past_key_values[0]) > 0:
+                        past_key_values_length = past_key_values[0][0].shape[2]
+            except (IndexError, KeyError, AttributeError):
+                # Try new cache format or other cache structures
+                try:
+                    if hasattr(past_key_values, 'get_seq_length'):
+                        past_key_values_length = past_key_values.get_seq_length()
+                    elif hasattr(past_key_values, 'seen_tokens'):
+                        past_key_values_length = past_key_values.seen_tokens
+                    else:
+                        # Default to 0 if we can't determine the length
+                        past_key_values_length = 0
+                except:
+                    past_key_values_length = 0
+        
         # required mask seq length can be calculated via length of past
         mask_seq_length = past_key_values_length + seq_length # not used since attention mask is input
 
@@ -317,7 +343,13 @@ class ShapeOPTDecoder(OPTDecoder):
                 else attention_mask
             )
         else:
-            raise ValueError("Only flash_attention_2 is supported in MeshAnything")
+            # Use eager attention (compatible with MPS)
+            causal_attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
+            attention_mask = (
+                torch.ones(batch_size, mask_seq_length, device=inputs_embeds.device)
+                if attention_mask is None
+                else attention_mask
+            )
 
         pos_embeds = self.embed_positions(attention_mask, past_key_values_length)
 
@@ -347,7 +379,16 @@ class ShapeOPTDecoder(OPTDecoder):
                 if dropout_probability < self.layerdrop:
                     continue
 
-            past_key_value = past_key_values[idx] if past_key_values is not None else None
+            # Handle different cache formats for compatibility
+            past_key_value = None
+            if past_key_values is not None:
+                try:
+                    # Try to access the cache in the old format
+                    if hasattr(past_key_values, '__len__') and len(past_key_values) > idx:
+                        past_key_value = past_key_values[idx]
+                except (IndexError, KeyError, AttributeError):
+                    # For new cache formats, let the layer handle it
+                    past_key_value = past_key_values
 
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(

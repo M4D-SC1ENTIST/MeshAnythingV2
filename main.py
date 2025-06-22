@@ -53,7 +53,15 @@ class Dataset:
         pc_coor = pc_coor - (bounds[0] + bounds[1])[None, :] / 2
         pc_coor = pc_coor / np.abs(pc_coor).max() * 0.9995
         assert (np.linalg.norm(normals, axis=-1) > 0.99).all(), "normals should be unit vectors, something wrong"
-        data_dict['pc_normal'] = np.concatenate([pc_coor, normals], axis=-1, dtype=np.float16)
+        
+        # Use fp32 on MPS for compatibility, fp16 on CUDA for efficiency
+        dtype = np.float32
+        if torch.cuda.is_available():
+            dtype = np.float16
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            dtype = np.float32  # MPS requires consistent data types
+        
+        data_dict['pc_normal'] = np.concatenate([pc_coor, normals], axis=-1, dtype=dtype)
         data_dict['uid'] = self.data[idx]['uid']
 
         return data_dict
@@ -91,13 +99,29 @@ if __name__ == "__main__":
     checkpoint_dir = os.path.join(args.out_dir, cur_time)
     os.makedirs(checkpoint_dir, exist_ok=True)
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    
+    # Determine mixed precision based on device capability
+    # fp16 mixed precision is not supported on MPS (Apple Silicon)
+    mixed_precision = "no"
+    if torch.cuda.is_available():
+        mixed_precision = "fp16"
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        # MPS doesn't support fp16 mixed precision, use no mixed precision
+        mixed_precision = "no"
+        print("Running on MPS (Apple Silicon) - mixed precision disabled for compatibility")
+    
     accelerator = Accelerator(
-        mixed_precision="fp16",
+        mixed_precision=mixed_precision,
         project_dir=checkpoint_dir,
         kwargs_handlers=[kwargs]
     )
 
     model = MeshAnythingV2.from_pretrained("Yiwen-ntu/meshanythingv2")
+    
+    # Ensure consistent data types on MPS
+    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and not torch.cuda.is_available():
+        print("Converting model to fp32 for MPS compatibility")
+        model = model.float()  # Convert all parameters to fp32
 
     # create dataset
     if args.input_dir is not None:

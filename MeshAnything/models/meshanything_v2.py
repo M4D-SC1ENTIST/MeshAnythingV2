@@ -24,12 +24,26 @@ class MeshAnythingV2(nn.Module, PyTorchModelHubMixin,
 
         self.coor_continuous_range = (-0.5, 0.5)
 
+        # Determine attention implementation based on device availability
+        attn_implementation = "eager"  # Default to eager for compatibility
+        use_flash_attention = False
+        
+        if torch.cuda.is_available():
+            try:
+                import flash_attn
+                attn_implementation = "flash_attention_2"
+                use_flash_attention = True
+            except ImportError:
+                print("FlashAttention not available, using eager attention")
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            print("Running on MPS - using eager attention for compatibility")
+
         self.config = ShapeOPTConfig.from_pretrained(
             "facebook/opt-350m",
             n_positions=self.max_length,
             max_position_embeddings=self.max_length,
             vocab_size=self.n_discrete_size + 4,
-            _attn_implementation="flash_attention_2"
+            _attn_implementation=attn_implementation
         )
 
         self.bos_token_id = 0
@@ -39,7 +53,7 @@ class MeshAnythingV2(nn.Module, PyTorchModelHubMixin,
         self.config.bos_token_id = self.bos_token_id
         self.config.eos_token_id = self.eos_token_id
         self.config.pad_token_id = self.pad_token_id
-        self.config._attn_implementation="flash_attention_2"
+        self.config._attn_implementation = attn_implementation
         self.config.n_discrete_size = self.n_discrete_size
         self.config.face_per_token = self.face_per_token
         self.config.cond_length = self.cond_length
@@ -47,9 +61,14 @@ class MeshAnythingV2(nn.Module, PyTorchModelHubMixin,
         if self.config.word_embed_proj_dim != self.config.hidden_size:
             self.config.word_embed_proj_dim = self.config.hidden_size
         self.transformer = AutoModelForCausalLM.from_config(
-            config=self.config, use_flash_attention_2 = True
+            config=self.config, use_flash_attention_2=use_flash_attention
         )
-        self.transformer.to_bettertransformer()
+        # Only use bettertransformer if not using flash attention
+        if not use_flash_attention:
+            try:
+                self.transformer.to_bettertransformer()
+            except Exception as e:
+                print(f"BetterTransformer not available: {e}")
 
         self.cond_head_proj = nn.Linear(self.cond_dim, self.config.word_embed_proj_dim)
         self.cond_proj = nn.Linear(self.cond_dim * 2, self.config.word_embed_proj_dim)
