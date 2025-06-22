@@ -4,15 +4,6 @@ from transformers import AutoModelForCausalLM
 from MeshAnything.miche.encode import load_model
 from MeshAnything.models.shape_opt import ShapeOPTConfig
 from einops import rearrange
-import sys
-import os
-
-# Add parent directory to path to import utils
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from utils import (
-    get_device, is_mps_device, get_attention_implementation, 
-    should_use_bettertransformer, get_dtype_for_device, ensure_device_compatibility
-)
 
 from huggingface_hub import PyTorchModelHubMixin
 
@@ -21,17 +12,7 @@ class MeshAnythingV2(nn.Module, PyTorchModelHubMixin,
     def __init__(self, config={}):
         super().__init__()
         self.config = config
-        
-        # Get the appropriate device
-        self.device = get_device()
-        print(f"Using device: {self.device}")
-        
         self.point_encoder = load_model(ckpt_path=None)
-        
-        # Force point encoder to float32 for MPS compatibility
-        if is_mps_device(self.device):
-            self.point_encoder = self.point_encoder.float()
-            
         self.n_discrete_size = 128
         self.max_seq_ratio = 0.70
         self.face_per_token = 9
@@ -43,15 +24,12 @@ class MeshAnythingV2(nn.Module, PyTorchModelHubMixin,
 
         self.coor_continuous_range = (-0.5, 0.5)
 
-        # Use device-appropriate attention implementation
-        attention_impl = get_attention_implementation(self.device)
-        
         self.config = ShapeOPTConfig.from_pretrained(
             "facebook/opt-350m",
             n_positions=self.max_length,
             max_position_embeddings=self.max_length,
             vocab_size=self.n_discrete_size + 4,
-            _attn_implementation=attention_impl
+            _attn_implementation="flash_attention_2"
         )
 
         self.bos_token_id = 0
@@ -61,35 +39,20 @@ class MeshAnythingV2(nn.Module, PyTorchModelHubMixin,
         self.config.bos_token_id = self.bos_token_id
         self.config.eos_token_id = self.eos_token_id
         self.config.pad_token_id = self.pad_token_id
-        self.config._attn_implementation = attention_impl
+        self.config._attn_implementation="flash_attention_2"
         self.config.n_discrete_size = self.n_discrete_size
         self.config.face_per_token = self.face_per_token
         self.config.cond_length = self.cond_length
 
         if self.config.word_embed_proj_dim != self.config.hidden_size:
             self.config.word_embed_proj_dim = self.config.hidden_size
-            
-        # Create transformer with device-specific settings
-        if is_mps_device(self.device):
-            self.transformer = AutoModelForCausalLM.from_config(
-                config=self.config  # use eager attention for MPS compatibility
-            )
-        else:
-            self.transformer = AutoModelForCausalLM.from_config(
-                config=self.config, use_flash_attention_2=True
-            )
-            # Only use bettertransformer on CUDA devices
-            if should_use_bettertransformer(self.device):
-                self.transformer.to_bettertransformer()
+        self.transformer = AutoModelForCausalLM.from_config(
+            config=self.config, use_flash_attention_2 = True
+        )
+        self.transformer.to_bettertransformer()
 
         self.cond_head_proj = nn.Linear(self.cond_dim, self.config.word_embed_proj_dim)
         self.cond_proj = nn.Linear(self.cond_dim * 2, self.config.word_embed_proj_dim)
-
-        # Force consistent float32 dtype for MPS compatibility
-        if is_mps_device(self.device):
-            self.transformer = self.transformer.float()
-            self.cond_head_proj = self.cond_head_proj.float()
-            self.cond_proj = self.cond_proj.float()
 
         self.eval()
 
@@ -137,17 +100,8 @@ class MeshAnythingV2(nn.Module, PyTorchModelHubMixin,
             return self.generate(data_dict)
 
     def process_point_feature(self, point_feature):
-        # Ensure device compatibility
-        point_feature = ensure_device_compatibility(point_feature, self.device)
-        
-        # Determine appropriate dtype
-        if is_mps_device(self.device):
-            target_dtype = torch.float32
-        else:
-            target_dtype = self.cond_head_proj.weight.dtype
-            
         encode_feature = torch.zeros(point_feature.shape[0], self.cond_length, self.config.word_embed_proj_dim,
-                                    device=self.cond_head_proj.weight.device, dtype=target_dtype)
+                                    device=self.cond_head_proj.weight.device, dtype=self.cond_head_proj.weight.dtype)
         encode_feature[:, 0] = self.cond_head_proj(point_feature[:, 0])
         shape_latents = self.point_encoder.to_shape_latents(point_feature[:, 1:])
         encode_feature[:, 1:] = self.cond_proj(torch.cat([point_feature[:, 1:], shape_latents], dim=-1))
@@ -156,9 +110,6 @@ class MeshAnythingV2(nn.Module, PyTorchModelHubMixin,
 
     @torch.no_grad()
     def forward(self, pc_normal, sampling=False) -> dict:
-        # Ensure device compatibility for input
-        pc_normal = ensure_device_compatibility(pc_normal, self.device)
-        
         batch_size = pc_normal.shape[0]
         point_feature = self.point_encoder.encode_latents(pc_normal)
         processed_point_feature = self.process_point_feature(point_feature)

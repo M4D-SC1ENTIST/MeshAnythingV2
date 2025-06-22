@@ -19,15 +19,7 @@ def load_surface(fp):
     surface = torch.FloatTensor(surface[ind])
     normal = torch.FloatTensor(normal[ind])
     
-    # Use dynamic device detection
-    if torch.cuda.is_available():
-        device = torch.device('cuda')
-    elif torch.backends.mps.is_available():
-        device = torch.device('mps')
-    else:
-        device = torch.device('cpu')
-    
-    surface = torch.cat([surface, normal], dim=-1).unsqueeze(0).to(device)
+    surface = torch.cat([surface, normal], dim=-1).unsqueeze(0).cuda()
     
     return surface
 

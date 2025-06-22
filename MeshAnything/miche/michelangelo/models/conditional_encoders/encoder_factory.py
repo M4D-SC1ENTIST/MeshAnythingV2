@@ -8,9 +8,6 @@ from transformers import CLIPModel, CLIPTokenizer
 from collections import OrderedDict
 
 from MeshAnything.miche.michelangelo.data.transforms import RandomResize
-import clip
-from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPProcessor
-from utils import get_device, is_mps_device
 
 
 class AbstractEncoder(nn.Module):
@@ -45,62 +42,71 @@ class FrozenCLIPTextEmbedder(AbstractEncoder):
         self,
         version="openai/clip-vit-large-patch14",
         tokenizer_version=None,
-        device=None,
+        device="cuda",
         max_length=77,
         zero_embedding_radio: float = 0.1,
     ):
         super().__init__()
-        
-        # Use device detection if not provided
-        if device is None:
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
-        
-        self.device = torch.device(device)
-        
-        self.tokenizer = CLIPTokenizer.from_pretrained(tokenizer_version if tokenizer_version is not None else version)
-        self.transformer = CLIPModel.from_pretrained(version)
-        self.transformer.eval()
-        self.transformer.requires_grad_(False)
+        self.tokenizer = CLIPTokenizer.from_pretrained(tokenizer_version or version)
 
+        self.device = device
         self.max_length = max_length
         self.zero_embedding_radio = zero_embedding_radio
+
+        self.clip_dict = OrderedDict()
+        self.clip_name = os.path.split(version)[-1]
+
+        transformer = CLIPModel.from_pretrained(version).text_model
+
+        for param in transformer.parameters():
+            param.requires_grad = False
+        self.clip_dict[self.clip_name] = transformer
+
         self._move_flag = False
 
     @property
     def clip(self):
-        return self.transformer
+        return self.clip_dict[self.clip_name]
 
     def move(self):
-        if not self._move_flag:
-            self.transformer.to(self.device)
-            self._move_flag = True
+        if self._move_flag:
+            return
+
+        self.clip_dict[self.clip_name] = self.clip_dict[self.clip_name].to(self.device)
+        self._move_flag = True
 
     def unconditional_embedding(self, batch_size):
-        return torch.zeros(batch_size, 77, 768, device=self.device, dtype=self.transformer.text_model.embeddings.token_embedding.weight.dtype)
+        empty_text = [""] * batch_size
+        empty_z = self.forward(empty_text)
+        return empty_z
 
     def forward(self, text):
-        batch_encoding = self.tokenizer(text, truncation=True, max_length=self.max_length, return_length=True,
-                                        return_overflowing_tokens=False, padding="max_length", return_tensors="pt")
-        with torch.no_grad():
-            tokens = batch_encoding["input_ids"].to(self.device)
-            # Use last_hidden_state instead of hidden_states for newer transformers
-            if hasattr(self.transformer.text_model, 'embeddings'):
-                outputs = self.transformer.text_model(input_ids=tokens)
-                z = outputs.last_hidden_state
-            else:
-                z = self.transformer.text_model(input_ids=tokens).last_hidden_state
+        self.move()
 
+        batch_encoding = self.tokenizer(
+            text,
+            truncation=True,
+            max_length=self.max_length,
+            return_length=True,
+            return_overflowing_tokens=False,
+            padding="max_length",
+            return_tensors="pt",
+        )
+
+        tokens = batch_encoding["input_ids"].to(self.device)
+        outputs = self.clip(input_ids=tokens)
+
+        z = outputs.last_hidden_state
         return z
 
     def encode(self, text):
-        self.move()
-        return self(text)
+        batch_size = len(text)
+        batch_mask = torch.rand((batch_size,))
+        for i in range(batch_size):
+            if batch_mask[i] < self.zero_embedding_radio:
+                text[i] = ""
 
+        return self(text)
 
 class FrozenAlignedCLIPTextEmbedder(AbstractEncoder):
     """Uses the CLIP transformer encoder for text (from Hugging Face)"""
@@ -109,60 +115,70 @@ class FrozenAlignedCLIPTextEmbedder(AbstractEncoder):
         self,
         version="openai/clip-vit-large-patch14",
         tokenizer_version=None,
-        device=None,
+        device="cuda",
         max_length=77,
         zero_embedding_radio: float = 0.1,
     ):
         super().__init__()
-        
-        # Use device detection if not provided
-        if device is None:
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
-        
-        self.device = torch.device(device)
-        
-        self.tokenizer = CLIPTokenizer.from_pretrained(tokenizer_version if tokenizer_version is not None else version)
-        self.transformer = CLIPModel.from_pretrained(version)
-        self.transformer.eval()
-        self.transformer.requires_grad_(False)
+        self.tokenizer = CLIPTokenizer.from_pretrained(tokenizer_version or version)
 
+        self.device = device
         self.max_length = max_length
         self.zero_embedding_radio = zero_embedding_radio
+
+        self.clip_dict = OrderedDict()
+        self.clip_name = os.path.split(version)[-1]
+
+        transformer = CLIPModel.from_pretrained(version).text_model
+
+        for param in transformer.parameters():
+            param.requires_grad = False
+        self.clip_dict[self.clip_name] = transformer
+
         self._move_flag = False
 
     @property
     def clip(self):
-        return self.transformer
+        return self.clip_dict[self.clip_name]
 
     def move(self):
-        if not self._move_flag:
-            self.transformer.to(self.device)
-            self._move_flag = True
+        if self._move_flag:
+            return
+
+        self.clip_dict[self.clip_name] = self.clip_dict[self.clip_name].to(self.device)
+        self._move_flag = True
 
     def unconditional_embedding(self, batch_size):
-        return torch.zeros(batch_size, 768, device=self.device, dtype=self.transformer.text_model.embeddings.token_embedding.weight.dtype)
+        empty_text = [""] * batch_size
+        empty_z = self.forward(empty_text)
+        return empty_z
 
     def forward(self, text):
-        batch_encoding = self.tokenizer(text, truncation=True, max_length=self.max_length, return_length=True,
-                                        return_overflowing_tokens=False, padding="max_length", return_tensors="pt")
-        with torch.no_grad():
-            tokens = batch_encoding["input_ids"].to(self.device)
-            # Use last_hidden_state for compatibility
-            if hasattr(self.transformer.text_model, 'embeddings'):
-                outputs = self.transformer.text_model(input_ids=tokens)
-                z = outputs.last_hidden_state[:, -1]  # Take the last token
-            else:
-                z = self.transformer.text_model(input_ids=tokens).last_hidden_state[:, -1]
+        self.move()
 
+        batch_encoding = self.tokenizer(
+            text,
+            truncation=True,
+            max_length=self.max_length,
+            return_length=True,
+            return_overflowing_tokens=False,
+            padding="max_length",
+            return_tensors="pt",
+        )
+
+        tokens = batch_encoding["input_ids"].to(self.device)
+        outputs = self.clip(input_ids=tokens)
+
+        z = outputs.last_hidden_state
         return z
 
     def encode(self, text):
-        self.move()
+        batch_size = len(text)
+        batch_mask = torch.rand((batch_size,))
+        for i in range(batch_size):
+            if batch_mask[i] < self.zero_embedding_radio:
+                text[i] = ""
+
         return self(text)
 
 
@@ -172,7 +188,7 @@ class FrozenCLIPImageEmbedder(AbstractEncoder):
     def __init__(
             self,
             version="openai/clip-vit-large-patch14",
-            device=None,
+            device="cuda",
             zero_embedding_radio=0.1,
             normalize_embedding=True,
             num_projection_vector=0,
@@ -180,17 +196,8 @@ class FrozenCLIPImageEmbedder(AbstractEncoder):
             reverse_visual_projection=False,
     ):
         super().__init__()
-        
-        # Use device detection if not provided
-        if device is None:
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
-        
-        self.device = torch.device(device)
+
+        self.device = device
 
         self.clip_dict = OrderedDict()
         self.clip_name = os.path.split(version)[-1]
@@ -278,9 +285,11 @@ class FrozenCLIPImageEmbedder(AbstractEncoder):
         return z
 
     def move(self):
-        if not self._move_flag:
-            self.clip_dict[self.clip_name].to(self.device)
-            self._move_flag = True
+        if self._move_flag:
+            return
+
+        self.clip_dict[self.clip_name] = self.clip_dict[self.clip_name].to(self.device)
+        self._move_flag = True
 
     def encode(self, image):
         self.move()
@@ -292,21 +301,12 @@ class FrozenCLIPImageGridEmbedder(AbstractEncoder):
     def __init__(
             self,
             version="openai/clip-vit-large-patch14",
-            device=None,
+            device="cuda",
             zero_embedding_radio=0.1,
     ):
         super().__init__()
-        
-        # Use device detection if not provided
-        if device is None:
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
-        
-        self.device = torch.device(device)
+
+        self.device = device
 
         self.clip_dict = OrderedDict()
         self.clip_name = os.path.split(version)[-1]
@@ -321,7 +321,7 @@ class FrozenCLIPImageGridEmbedder(AbstractEncoder):
 
         self.transform = transforms.Compose(
             [
-                transforms.Resize(224, transforms.InterpolationMode.BICUBIC, antialias=True),
+                transforms.Resize(224, transforms.InterpolationMode.BILINEAR, antialias=True),
                 transforms.CenterCrop(224),  # crop a (224, 224) square
                 transforms.Normalize(
                     mean=[0.48145466, 0.4578275, 0.40821073],
@@ -339,9 +339,11 @@ class FrozenCLIPImageGridEmbedder(AbstractEncoder):
         return self.clip_dict[self.clip_name]
 
     def move(self):
-        if not self._move_flag:
-            self.clip_dict[self.clip_name].to(self.device)
-            self._move_flag = True
+        if self._move_flag:
+            return
+
+        self.clip_dict[self.clip_name] = self.clip_dict[self.clip_name].to(self.device)
+        self._move_flag = True
 
     def unconditional_embedding(self, batch_size):
         zero = torch.zeros(
@@ -371,7 +373,6 @@ class FrozenCLIPImageGridEmbedder(AbstractEncoder):
         return z
 
     def encode(self, image):
-        self.move()
         return self(image, zero_embedding_radio=self.zero_embedding_radio)
 
 
@@ -382,7 +383,7 @@ class MoECLIPImageEncoder(nn.Module):
             hidden_state_dim,
             num_projection_vector=8,
             zero_embedding_radio=0.1,
-            device=None,
+            device="cuda",
             precision="fp16",
             normalize=False,
             clip_max=0,
@@ -391,24 +392,10 @@ class MoECLIPImageEncoder(nn.Module):
     ):
         super().__init__()
 
-        # Use device detection if not provided
-        if device is None:
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
-
         self.device = torch.device(device)
         self.hidden_state_dim = hidden_state_dim
         self.zero_embedding_radio = zero_embedding_radio
         self.num_projection_vector = num_projection_vector
-        
-        # Adjust precision for MPS compatibility
-        if is_mps_device(self.device) and precision == "fp16":
-            precision = "fp32"  # MPS works better with fp32
-            
         self.dtype = dict(fp16=torch.float16, fp32=torch.float32, bf16=torch.bfloat16)[precision]
         self.normalize = normalize
         self.clip_max = clip_max
@@ -468,7 +455,7 @@ class MoECLIPImageEncoder(nn.Module):
         clips = OrderedDict()
 
         for v in versions:
-            # Load clips on CPU first to avoid device allocation issues
+            # 因为clips不是子module，直接指定device="cuda"会错误地导致clip模型权重都被放到cuda:0上。
             clips[v], _ = clip.load(name=v, device="cpu", jit=False, download_root=None)
             delattr(clips[v], "transformer")
             clips[v].eval()
@@ -488,10 +475,41 @@ class MoECLIPImageEncoder(nn.Module):
         self._move_flag = False
 
     def move(self):
-        if not self._move_flag:
-            for k in self.clips:
-                self.clips[k].to(self.device)
-            self._move_flag = True
+        if self._move_flag:
+            return
+
+        def convert_weights(model: nn.Module):
+            """Convert applicable model parameters to fp16"""
+
+            def _convert_weights_to_fp16(l):
+                if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Linear)):
+                    l.weight.data = l.weight.data.type(self.dtype)
+                    if l.bias is not None:
+                        l.bias.data = l.bias.data.type(self.dtype)
+
+                if isinstance(l, nn.MultiheadAttention):
+                    for attr in [
+                        *[f"{s}_proj_weight" for s in ["in", "q", "k", "v"]],
+                        "in_proj_bias",
+                        "bias_k",
+                        "bias_v",
+                    ]:
+                        tensor = getattr(l, attr)
+                        if tensor is not None:
+                            tensor.data = tensor.data.type(self.dtype)
+
+                for name in ["text_projection", "proj"]:
+                    if hasattr(l, name):
+                        attr = getattr(l, name)
+                        if attr is not None:
+                            attr.data = attr.data.type(self.dtype)
+
+            model.apply(_convert_weights_to_fp16)
+
+        for k in self.clips:
+            self.clips[k].to(self.device)
+            convert_weights(self.clips[k])  # fp32 -> self.dtype
+        self._move_flag = True
 
     def unconditional_embedding(self, batch_size=None):
         zero = torch.zeros(
